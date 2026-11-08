@@ -3,11 +3,19 @@ from exts import db,r
 from models import ImageResultModel
 import base64
 import requests
-from config import api_endpoint, max_analysis_time, MAX_RUNNING
+from config import (
+    analysis_api_key,
+    analysis_api_url,
+    analysis_model,
+    analysis_prompt,
+    max_analysis_time,
+    MAX_RUNNING,
+)
 from blueprints.file_processing.fileprocessor import AsyncFileProcessor
 from concurrent.futures import ThreadPoolExecutor
 import json
 import time
+import mimetypes
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +78,31 @@ class ImageAnalysisWorker:
                 with open(image.image_path, 'rb') as f:
                     image_data = f.read()
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
-                payload = {
+                legacy_payload = {
                     'image': image_base64,
                     'model': 'clip'  # 或其他分析模型
                 }
+                if not analysis_api_key:
+                    raise RuntimeError('GLM_API_KEY is not configured')
+                mime_type = mimetypes.guess_type(image.image_filename)[0] or 'image/jpeg'
+                payload = {
+                    'model': analysis_model,
+                    'messages': [{
+                        'role': 'user',
+                        'content': [
+                            {'type': 'text', 'text': analysis_prompt},
+                            {'type': 'image_url', 'image_url': {
+                                'url': f'data:{mime_type};base64,{image_base64}'
+                            }}
+                        ]
+                    }]
+                }
                 response = requests.post(
-                    api_endpoint,
+                    analysis_api_url,
+                    headers={
+                        'Authorization': f'Bearer {analysis_api_key}',
+                        'Content-Type': 'application/json'
+                    },
                     json=payload,
                     timeout=self.max_analysis_time
                 )
@@ -83,6 +110,22 @@ class ImageAnalysisWorker:
                     image.status = 'completed'
                     # 存储API返回的JSON数据
                     image.analysis_result = response.json()  # 提取JSON内容
+                    response_data = image.analysis_result
+                    choices = response_data.get('choices') or []
+                    message = choices[0].get('message', {}) if choices else {}
+                    description = message.get('content', '')
+                    if isinstance(description, list):
+                        description = ''.join(
+                            item.get('text', '') if isinstance(item, dict) else str(item)
+                            for item in description
+                        )
+                    if not description:
+                        raise RuntimeError('GLM response did not contain a description')
+                    image.analysis_result = {
+                        'description': description,
+                        'model': response_data.get('model', analysis_model),
+                        'provider': 'glm'
+                    }
                 else:
                     image.status = 'failed'
                     image.error_message = f"分析错误: {response.status_code} - {response.text}"

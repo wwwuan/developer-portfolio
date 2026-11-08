@@ -6,7 +6,7 @@
 
 病理切片图像文件数量多、体积大，分析过程也可能耗时。如果用户只能逐张提交并等待同步结果，批量处理会占用请求连接，也很难查看哪些图像已完成、哪些失败。这个项目希望把流程拆成可追踪的步骤：用户一次上传一批图像，服务登记项目和文件，后台 worker 逐项调用分析接口，用户再查询整体进度并导出结果。
 
-项目当前主要解决的是**上传和分析任务管理**问题，包括批量上传、异步排队、并发控制、状态记录、进度查询和结果汇总。仓库里的分析接口目前配置为本地测试路由，不包含病理诊断模型；接入真实模型或分析服务后，worker 才会产生实际的病理图像分析结果。
+项目当前主要解决的是**上传和分析任务管理**问题，包括批量上传、异步排队、并发控制、状态记录、进度查询和结果汇总。图片分析通过 GLM 多模态接口完成，模型返回的图片描述保存在图片分析结果中；这属于图像内容描述，不等同于医疗诊断结论。
 
 ## 任务流程
 
@@ -73,7 +73,30 @@ python -m pip install -r requirements.txt
 
 ## 配置
 
-运行前检查并配置 `config.py` 中的数据库、Redis、邮件发送、上传目录和 `api_endpoint`。当前 `api_endpoint` 默认指向本应用的 `/user_home/` 测试路由；该路由等待 5 秒后返回 `Hello World!`，并不执行图片分析。接入实际分析服务时，应将地址改为正确的分析 API。
+`config.py` 从系统环境变量和项目根目录的 `.env` 加载数据库、Redis、邮件、签名密钥及 GLM 分析接口配置，系统环境变量优先。首次部署时复制不含真实凭据的配置模板：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+在本地 `.env` 中填写数据库密码、邮件授权码、GLM API 密钥及管理员邮箱白名单。分别运行以下命令生成随机值，填写 `SECRET_KEY`、`JWT_SECRET_KEY` 和 `SECURITY_KEY`：
+
+```powershell
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+`SECRET_KEY` 和 `SECURITY_KEY` 为必填项，缺失时启动会提示变量名；`JWT_SECRET_KEY` 留空时使用 `SECRET_KEY`。`ADMIN_WHITELIST` 使用逗号分隔邮箱，留空时禁止管理员注册。也可以用 `DATABASE_URL` 和 `REDIS_URL` 分别覆盖数据库与 Redis 连接地址。Web、worker 和数据库迁移都会自动读取项目根目录的 `.env`。
+
+也可以在 PowerShell 中设置环境变量，例如：
+
+```powershell
+$env:GLM_API_KEY = "你的 GLM API 密钥"
+$env:ANALYSIS_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+$env:ANALYSIS_MODEL = "GLM-5.3-flash"
+$env:MAX_ANALYSIS_TIME = "60"
+```
+
+不要把真实密钥写入 `config.py`、`.env.example` 或 Git。`.env` 及其他 `.env.*` 本地文件已被 Git 忽略，只有不含真实凭据的模板 `.env.example` 会上传。如果服务商给出的模型标识或接口地址不同，请以控制台文档为准调整 `ANALYSIS_MODEL` 和 `ANALYSIS_API_URL`。
 
 分析超时可通过环境变量设置，默认 10 秒：
 
@@ -81,7 +104,7 @@ python -m pip install -r requirements.txt
 $env:MAX_ANALYSIS_TIME = "30"
 ```
 
-`config.py` 目前包含本地开发用的凭据配置。部署或共享仓库前，应将数据库、邮件等敏感值移到环境变量或未纳入版本控制的本地配置中，并替换示例密钥。
+如果凭据曾出现在 Git 提交中，删除当前文件里的值后仍需更换相关密码或密钥，因为旧提交仍可能保留原值。
 
 ## 数据库迁移
 
@@ -105,7 +128,7 @@ python app.py
 ```powershell
 # 终端二：图片任务 worker
 .\.venv\Scripts\Activate.ps1
-python workers\run_image_worker.py
+python -m workers.run_image_worker
 ```
 
 开发服务器默认监听 `http://127.0.0.1:5000`。可通过 `GET /photo_transfer/health` 检查 ZIP 服务路由是否可用。

@@ -85,6 +85,8 @@ def generate_project_excel_report(project_id):
                                 if 'objects' in img.analysis_result:
                                     objects = img.analysis_result['objects']
                                     analysis_info = f"检测到{len(objects)}个对象"
+                                elif 'description' in img.analysis_result:
+                                    analysis_info = str(img.analysis_result['description'])
                                 elif 'result' in img.analysis_result:
                                     analysis_info = str(img.analysis_result['result'])
                                 else:
